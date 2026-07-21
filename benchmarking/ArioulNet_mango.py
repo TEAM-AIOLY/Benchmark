@@ -20,7 +20,7 @@ from src.utils.dataset_loader import DatasetLoader
 from src.utils.testing import RMSEP, ccc
 
 # Constants
-SEARCH_MAX_EPOCHS = 300
+SEARCH_MAX_EPOCHS = 500
 SEARCH_PATIENCE = 30
 FINAL_MAX_EPOCHS = 1000
 FINAL_PATIENCE = 50
@@ -93,7 +93,7 @@ def make_model(arch_params, dropout, spec_dims, y_dim, mean, std, device):
 
 def run_training(model, hp_params, cal_loader, val_loader, num_epochs, 
                  early_stopping_patience, trial=None, verbose=False, 
-                 save_path=None):
+                 save_path=None, use_cosine_lr=True):
     """Run training with checkpointing."""
     criterion = nn.MSELoss(reduction="mean")
     optimizer = optim.Adam(model.parameters(), lr=hp_params["LR"], weight_decay=hp_params["WD"])
@@ -105,7 +105,7 @@ def run_training(model, hp_params, cal_loader, val_loader, num_epochs,
         num_epochs=num_epochs,
         classification=False,
         save_path=save_path,
-        use_cosine_lr=True  # Enable cosine LR
+        use_cosine_lr=use_cosine_lr
     )
 
     trainer = Trainer(
@@ -141,14 +141,14 @@ def cleanup_checkpoint(checkpoint_dir):
 def objective_architecture(trial, data, mean, std, spec_dims, y_dim, device, search_dir):
     """Optuna objective for architecture search."""
     arch_params = {
-        "DEPTH": trial.suggest_int("DEPTH", 1, 4),
+        "DEPTH": trial.suggest_int("DEPTH", 1, 5),
         "KS": trial.suggest_categorical("KS", [3, 5, 7, 11]),
-        "NF": trial.suggest_categorical("NF", [1, 3]),
+        "NF": trial.suggest_int("NF", 1, 7),
         "FC": trial.suggest_categorical("FC", [32, 64, 128, 256]),
     }
     
     # Fixed hyperparameters for architecture search
-    fixed_hp = {"LR": 0.001, "WD": 0.0015, "batch_size": 512}
+    fixed_hp = {"LR": 0.0005, "WD": 0.0015, "batch_size": 256}
     dropout = 0.1
 
     set_seed(42)
@@ -176,8 +176,8 @@ def objective_hyperparams(trial, data, mean, std, spec_dims, y_dim, fixed_arch, 
         "LR": trial.suggest_float("LR", 1e-4, 1e-2, log=True),
         "WD": trial.suggest_float("WD", 1e-5, 1e-2, log=True),
         "DP": trial.suggest_float("DP", 0.0, 0.5),
-        "batch_size": trial.suggest_categorical("batch_size", [128, 256, 512]),
     }
+    hp_params["batch_size"] = 256
 
     set_seed(42)
     cal_loader, val_loader, _ = build_loaders(data, hp_params["batch_size"])
@@ -221,26 +221,138 @@ def plot_diagnostics(Y, y_pred, perf, out_dir, tag):
     import matplotlib.pyplot as plt
     
     lims = [min(np.min(Y), np.min(y_pred)), max(np.max(Y), np.max(y_pred))]
+    typ = tag
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.scatter(Y, y_pred, edgecolors='k', alpha=0.5)
-    ax.plot(lims, lims, 'r')
+    hexbin = ax.hexbin(Y, y_pred, gridsize=50, cmap='viridis', mincnt=1)
+    cb = fig.colorbar(hexbin, ax=ax, orientation='vertical')
+    cb.set_label('Density')
+    ax.plot(lims, lims, 'k-', label=typ)
     ax.set_xlim(lims)
     ax.set_ylim(lims)
     ax.set_xlabel('Expected Values')
     ax.set_ylabel('Predicted Values')
-    ax.text(0.98, 0.02, f"CCC: {perf['ccc']:.2f}\nR²: {perf['r2']:.2f}\nRMSEP: {perf['rmsep']:.3f}",
-            transform=ax.transAxes, fontsize=12, va='bottom', ha='right',
-            bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.5'),
-            color='red', fontweight='bold', fontfamily='serif')
+    ax.set_title('')
+    ax.text(
+        0.98, 0.02,
+        f"CCC: {perf['ccc']:.2f}\nR²: {perf['r2']:.2f}\nRMSEP: {perf['rmsep']:.3f}",
+        transform=ax.transAxes,
+        fontsize=12,
+        va='bottom', ha='right',
+        bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.5'),
+        color='red',
+        fontweight='bold',
+        fontfamily='serif'
+    )
+    plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),
+               fancybox=True, shadow=True, ncol=5, fontsize=12)
     plt.tight_layout()
     plt.grid()
-    plt.savefig(out_dir / f"predicted_vs_observed_{tag}.pdf", format='pdf')
+    hexbin_pdf_path = out_dir / "fig_hexbin.pdf"
+    plt.savefig(hexbin_pdf_path, format='pdf')
     plt.close('all')
+
+
+def plot_seed_prediction_variability(predictions, true_values, out_dir, tag):
+    """Summarize prediction variability across seeds."""
+    import matplotlib.pyplot as plt
+
+    preds = np.stack(predictions, axis=0)
+    true_vals = np.asarray(true_values)
+    mean_pred = np.mean(preds, axis=0)
+    std_pred = np.std(preds, axis=0)
+    sample_idx = np.arange(len(mean_pred))
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(sample_idx, mean_pred, color='#1f77b4', linewidth=2, label='Mean prediction')
+    ax.fill_between(sample_idx, mean_pred - std_pred, mean_pred + std_pred,
+                    color='#1f77b4', alpha=0.2, label='±1 SD')
+    if true_vals.ndim == 1:
+        ax.plot(sample_idx, true_vals, color='#d62728', linewidth=1.5, linestyle='--', label='True values')
+    ax.set_xlabel('Sample index')
+    ax.set_ylabel('Prediction')
+    ax.set_title(f'Prediction variability across {len(predictions)} seeds ({tag})')
+    ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
+    ax.legend(loc='best')
+    fig.tight_layout()
+    pdf_path = out_dir / f"prediction_variability_{tag}.pdf"
+    fig.savefig(pdf_path, format='pdf')
+    plt.close(fig)
+
+
+def plot_training_history(train_losses, val_losses, val_metrics, out_dir, tag, maxplot_loss=10):
+    """Plot training and validation loss with metric curves."""
+    import matplotlib.pyplot as plt
+
+    train_losses_np = [loss.detach().cpu().numpy() if torch.is_tensor(loss) else np.asarray(loss) for loss in train_losses]
+    val_losses_np = [loss.detach().cpu().numpy() if torch.is_tensor(loss) else np.asarray(loss) for loss in val_losses]
+
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+
+    train_color = '#1f77b4'
+    val_color = '#ff7f0e'
+    metric_color = '#2ca02c'
+
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss', color=train_color)
+    ax1.plot(train_losses_np, label='Training Loss', color=train_color, linewidth=2)
+    ax1.plot(val_losses_np, label='Validation Loss', color=val_color, linewidth=2)
+    ax1.tick_params(axis='y', labelcolor=train_color)
+    ax1.set_ylim(0, min(maxplot_loss, max(max(train_losses_np), max(val_losses_np)) * 1.1))
+    ax1.legend(loc='upper left')
+
+    ax2 = ax1.twinx()
+    ax2.set_ylabel('Metric', color=metric_color)
+    ax2.tick_params(axis='y', labelcolor=metric_color)
+
+    if len(val_metrics) > 0 and isinstance(val_metrics[0], (list, tuple, np.ndarray)):
+        for i in range(len(val_metrics[0])):
+            metric_scores = [scores[i] for scores in val_metrics]
+            ax2.plot(metric_scores, label=f'R² Score y{i}', linestyle='--', color=metric_color, linewidth=2)
+    else:
+        ax2.plot(val_metrics, label='R² Score', linestyle='--', color=metric_color, linewidth=2)
+
+    ax2.set_ylim(0, 1)
+    ax2.legend(loc='upper right')
+
+    plt.title('Training & Validation Loss and Metrics')
+    fig.tight_layout()
+    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+    pdf_path = out_dir / f"Training_{tag}.pdf"
+    plt.savefig(pdf_path, format='pdf')
+    plt.close(fig)
+
+
+def save_retained_architecture_training_plot(data, mean, std, spec_dims, y_dim, best_arch, device, out_dir):
+    """Save a training-history plot for the retained architecture after phase 1."""
+    fixed_hp = {"LR": 0.0001, "WD": 0.0015, "batch_size": 256}
+    dropout = 0.1
+
+    set_seed(42)
+    cal_loader, val_loader, _ = build_loaders(data, fixed_hp["batch_size"])
+    model = make_model(best_arch, dropout, spec_dims, y_dim, mean, std, device)
+
+    trainer, train_losses, val_losses, val_metrics, _ = run_training(
+        model,
+        fixed_hp,
+        cal_loader,
+        val_loader,
+        num_epochs=SEARCH_MAX_EPOCHS,
+        early_stopping_patience=SEARCH_PATIENCE,
+        trial=None,
+        verbose=False,
+        save_path=out_dir / f"{MODEL_TYPE}_retained_arch",
+        use_cosine_lr=True,
+    )
+    plot_training_history(train_losses, val_losses, val_metrics, out_dir, tag='retained_architecture')
+    return trainer
+
 
 def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, device, final_dir):
     """Run multi-seed final evaluation."""
     seed_metrics = []
+    seed_predictions = []
+    seed_true_values = None
     
     for seed in FINAL_SEEDS:
         seed_dir = final_dir / f"seed_{seed:02d}"
@@ -271,6 +383,9 @@ def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, d
 
         perf, Y, y_pred = evaluate_test(model, best_model_path, test_loader, trainer.config)
         plot_diagnostics(Y, y_pred, perf, seed_dir, tag=DATASET_TYPE)
+        if seed_true_values is None:
+            seed_true_values = Y
+        seed_predictions.append(y_pred)
 
         # Count parameters
         nb_params = sum(p.numel() for p in model.parameters())
@@ -288,7 +403,10 @@ def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, d
             json.dump(metrics_dict, f, indent=2)
             
         seed_metrics.append(metrics_dict)
-        
+    
+    if seed_true_values is not None and len(seed_predictions) > 0:
+        plot_seed_prediction_variability(seed_predictions, seed_true_values, final_dir, tag=DATASET_TYPE)
+    
     return seed_metrics
 
 def summarise_seed_metrics(seed_metrics):
@@ -347,6 +465,10 @@ def main():
     best_arch = study_arch.best_params
     print(f"\nBest architecture: {best_arch}")
     print(f"Best validation score: {study_arch.best_value:.4f}")
+
+    save_retained_architecture_training_plot(
+        data, mean, std, spec_dims, y_dim, best_arch, device, arch_search_dir
+    )
     
     # Save results
     study_arch.trials_dataframe().to_csv(arch_search_dir / "trials.csv", index=False)

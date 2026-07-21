@@ -12,5 +12,4 @@ __pycache__/
 *.png
 
 results/
-Ale/
-figures_spectra/
+Benchmark/
