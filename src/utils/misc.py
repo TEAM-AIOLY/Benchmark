@@ -28,37 +28,30 @@ class data_augmentation:
 
 
 class TrainerConfig:
-    def __init__(self,model_name,  project_root=None):
-        """
-        Configuration class for training the model.
-
-        :param project_root: Absolute path to the project's root directory. If None, it is dynamically determined.
-        """
+    def __init__(self, model_name, project_root=None):
+        """Configuration class for training the model."""
         if project_root is None:
             project_root = self.find_project_root(Path(__file__).resolve().parent)
 
         self.project_root = project_root
-        self.save_path = self.project_root /"models" / model_name
+        self.save_path = self.project_root / "models" / model_name
 
-        # Training hyperparameters (editable)
+        # Training hyperparameters
         self.batch_size = 64
         self.learning_rate = 1e-3
         self.num_epochs = 50
         self.classification = False
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # Cosine annealing LR (NEW)
+        self.use_cosine_lr = True
 
-        # Validation and saving options (editable)
+        # Validation and saving options
         self.save_model = True
         self.max_loss_plot = 10
 
     def find_project_root(self, start_path, marker="src"):
-        """
-        Searches for the project root by traversing up the directory tree looking for a specific marker (e.g., 'src').
-
-        :param start_path: The starting path for the search.
-        :param marker: The specific marker to identify the root (default is 'src').
-        :return: The path to the project root or None if not found.
-        """
+        """Searches for the project root by traversing up the directory tree looking for a specific marker."""
         current_path = Path(start_path).resolve()
         while current_path != current_path.root:
             if (current_path / marker).exists():
@@ -66,14 +59,17 @@ class TrainerConfig:
             current_path = current_path.parent
         return None
 
+    def update_config(self, **kwargs):
+        """Update configuration parameters dynamically."""
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
     def __repr__(self):
-        """
-        String representation of the configuration, mainly for debugging purposes.
-        """
         return f"TrainerConfig(batch_size={self.batch_size}, learning_rate={self.learning_rate}, " \
-               f"num_epochs={self.num_epochs}, device={self.device}, save_model={self.save_model}, "\
-                f" classification={self.classification}, max_loss_plot={self.max_loss_plot},"\
-                f"save_path={self.save_path})"
+               f"num_epochs={self.num_epochs}, device={self.device}, save_model={self.save_model}, " \
+               f"classification={self.classification}, use_cosine_lr={self.use_cosine_lr}, " \
+               f"max_loss_plot={self.max_loss_plot}, save_path={self.save_path})"
 
     def update_config(self, batch_size=None, learning_rate=None, num_epochs=None, save_model=None,
                        classification=None, max_loss_plot=None,save_path=None):
