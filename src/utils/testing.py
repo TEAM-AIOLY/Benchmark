@@ -38,24 +38,24 @@ def ccc(y_true, y_pred):
 
 
 def test(model, model_path, test_loader, config):
-    Y = []
-    y_pred = []
-    model.load_state_dict(torch.load(model_path))
+    Y_batches = []
+    y_pred_batches = []
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
 
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     with torch.no_grad():
         for inputs, targets in test_loader:
-            Y += targets.to("cpu")
+            Y_batches.append(targets.detach().cpu())
             inputs = inputs.to(device, non_blocking=True).float()
-            outputs = model(inputs[:, None])
-            y_pred += outputs.to("cpu")
+            outputs = model(inputs[:, None]).detach().cpu()
+            y_pred_batches.append(outputs)
 
-    Y = np.array(Y)
-    y_pred = np.array(y_pred)
+    Y = torch.cat(Y_batches, dim=0).numpy()
+    y_pred = torch.cat(y_pred_batches, dim=0).numpy()
 
     if config.classification:
         y_pred = np.exp(y_pred) / np.sum(np.exp(y_pred), axis=1, keepdims=True)
@@ -99,23 +99,23 @@ def test(model, model_path, test_loader, config):
     
     
 def test_benchmark(model, model_path, test_loader, config):
-    Y = []
-    y_pred = []
-    model.load_state_dict(torch.load(model_path))
+    Y_batches = []
+    y_pred_batches = []
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
         device = torch.device("cpu")
 
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
     with torch.no_grad():
         for inputs, targets in test_loader:
-            Y += targets.to("cpu")
+            Y_batches.append(targets.detach().cpu())
             inputs = inputs.to(device, non_blocking=True).float()
-            outputs = model(inputs[:, None])
-            y_pred += outputs.to("cpu")
+            outputs = model(inputs[:, None]).detach().cpu()
+            y_pred_batches.append(outputs)
 
-    Y = np.array(Y)
-    y_pred = np.array(y_pred)
+    Y = torch.cat(Y_batches, dim=0).numpy()
+    y_pred = torch.cat(y_pred_batches, dim=0).numpy()
 
-    return(Y, y_pred)
+    return Y, y_pred

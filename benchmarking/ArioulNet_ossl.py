@@ -1,4 +1,3 @@
-# ArioulNet_mango.py (updated)
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,18 +19,18 @@ from src.utils.dataset_loader import DatasetLoader
 from src.utils.testing import RMSEP, ccc
 
 # Constants
-SEARCH_MAX_EPOCHS = 500
+SEARCH_MAX_EPOCHS = 200
 SEARCH_PATIENCE = 30
-FINAL_MAX_EPOCHS = 1000
+FINAL_MAX_EPOCHS = 300
 FINAL_PATIENCE = 50
 
-N_TRIALS_ARCH = 100
-N_TRIALS_HP = 100
+N_TRIALS_ARCH = 30
+N_TRIALS_HP = 30
 FINAL_SEEDS = list(range(10))
 
-MODEL_TYPE = "ArioulNet_mango"
-DATASET_TYPE = "mango_new"
-BATCH_SIZE = 256
+MODEL_TYPE = "ArioulNet_ossl"
+DATASET_TYPE = "ossl"
+BATCH_SIZE = 512
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -142,10 +141,10 @@ def cleanup_checkpoint(checkpoint_dir):
 def objective_architecture(trial, data, mean, std, spec_dims, y_dim, device, search_dir):
     """Optuna objective for architecture search."""
     arch_params = {
-        "DEPTH": trial.suggest_int("DEPTH", 1, 5),
-        "KS": trial.suggest_categorical("KS", [3, 5, 7, 11]),
-        "NF": trial.suggest_int("NF", 1, 7),
-        "FC": trial.suggest_categorical("FC", [32, 64, 128, 256]),
+        "DEPTH": trial.suggest_int("DEPTH", 1, 3),
+        "KS": trial.suggest_categorical("KS", [ 7, 11]),
+        "NF": trial.suggest_int("NF", 1, 5),
+        "FC": trial.suggest_categorical("FC", [ 128, 256]),
     }
     
     # Fixed hyperparameters for architecture search
@@ -252,59 +251,35 @@ def plot_diagnostics(Y, y_pred, perf, out_dir, tag):
     plt.savefig(hexbin_pdf_path, format='pdf')
     plt.close('all')
 
-
 def plot_seed_prediction_variability(predictions, true_values, out_dir, tag):
     """Summarize prediction variability across seeds, plotted against true values."""
     import matplotlib.pyplot as plt
- 
+
     preds = np.stack(predictions, axis=0)
-    true_vals = np.asarray(true_values)
-    mean_pred = np.mean(preds, axis=0)
-    std_pred = np.std(preds, axis=0)
- 
-    if mean_pred.ndim == 1:
-        order = np.argsort(true_vals)
-        true_sorted = true_vals[order]
-        mean_sorted = mean_pred[order]
-        std_sorted = std_pred[order]
- 
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(true_sorted, mean_sorted, color='#1f77b4', linewidth=2, label='Mean prediction')
-        ax.fill_between(true_sorted, mean_sorted - std_sorted, mean_sorted + std_sorted,
-                        color='#1f77b4', alpha=0.2, label='±1 SD')
-        lims = [min(true_sorted.min(), mean_sorted.min()), max(true_sorted.max(), mean_sorted.max())]
-        ax.plot(lims, lims, color='#d62728', linewidth=1.5, linestyle='--', label='Identity (y = x)')
-        ax.set_xlabel('True value')
-        ax.set_ylabel('Prediction')
-        ax.set_title(f'Prediction variability across {len(predictions)} seeds ({tag})')
-        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
-        ax.legend(loc='best')
-    else:
-        n_outputs = mean_pred.shape[1]
-        fig, axes = plt.subplots(n_outputs, 1, figsize=(10, 2.5 * n_outputs), squeeze=False)
-        for i, ax in enumerate(axes[:, 0]):
-            order = np.argsort(true_vals[:, i])
-            true_sorted = true_vals[order, i]
-            mean_sorted = mean_pred[order, i]
-            std_sorted = std_pred[order, i]
- 
-            ax.plot(true_sorted, mean_sorted, color='#1f77b4', linewidth=2, label='Mean prediction')
-            ax.fill_between(true_sorted, mean_sorted - std_sorted, mean_sorted + std_sorted,
-                            color='#1f77b4', alpha=0.2, label='±1 SD')
-            lims = [min(true_sorted.min(), mean_sorted.min()), max(true_sorted.max(), mean_sorted.max())]
-            ax.plot(lims, lims, color='#d62728', linewidth=1.5, linestyle='--', label='Identity (y = x)')
-            ax.set_xlabel('True value')
-            ax.set_ylabel(f'Output {i + 1}')
-            ax.set_title(f'Prediction variability across {len(predictions)} seeds ({tag}) - output {i + 1}')
-            ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
-            ax.legend(loc='best')
- 
+    true_vals = np.asarray(true_values).reshape(-1)
+    mean_pred = np.mean(preds, axis=0).reshape(-1)
+    std_pred = np.std(preds, axis=0).reshape(-1)
+
+    order = np.argsort(true_vals)
+    true_sorted = true_vals[order]
+    mean_sorted = mean_pred[order]
+    std_sorted = std_pred[order]
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(true_sorted, mean_sorted, color='#1f77b4', linewidth=2, label='Mean prediction')
+    ax.fill_between(true_sorted, mean_sorted - std_sorted, mean_sorted + std_sorted,
+                    color='#1f77b4', alpha=0.2, label='±1 SD')
+    lims = [min(true_sorted.min(), mean_sorted.min()), max(true_sorted.max(), mean_sorted.max())]
+    ax.plot(lims, lims, color='#d62728', linewidth=1.5, linestyle='--', label='Identity (y = x)')
+    ax.set_xlabel('True value')
+    ax.set_ylabel('Prediction')
+    ax.set_title(f'Prediction variability across {len(predictions)} seeds ({tag})')
+    ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
+    ax.legend(loc='best')
     fig.tight_layout()
     pdf_path = out_dir / f"prediction_variability_{tag}.pdf"
     fig.savefig(pdf_path, format='pdf')
     plt.close(fig)
-
-
 
 def plot_training_history(train_losses, val_losses, val_metrics, out_dir, tag, maxplot_loss=10):
     """Plot training and validation loss with metric curves."""
@@ -348,7 +323,6 @@ def plot_training_history(train_losses, val_losses, val_metrics, out_dir, tag, m
     plt.savefig(pdf_path, format='pdf')
     plt.close(fig)
 
-
 def save_retained_architecture_training_plot(data, mean, std, spec_dims, y_dim, best_arch, device, out_dir):
     """Save a training-history plot for the retained architecture after phase 1."""
     fixed_hp = {"LR": 0.0001, "WD": 0.0015}
@@ -373,7 +347,6 @@ def save_retained_architecture_training_plot(data, mean, std, spec_dims, y_dim, 
     plot_training_history(train_losses, val_losses, val_metrics, out_dir, tag='retained_architecture')
     return trainer
 
-
 def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, device, final_dir):
     """Run multi-seed final evaluation."""
     seed_metrics = []
@@ -382,9 +355,6 @@ def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, d
     
     for seed in FINAL_SEEDS:
         seed_dir = final_dir / f"seed_{seed:02d}"
-        if seed_dir.exists():
-            import shutil
-            shutil.rmtree(seed_dir)
         seed_dir.mkdir(parents=True, exist_ok=True)
 
         set_seed(seed)
@@ -401,22 +371,14 @@ def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, d
             use_cosine_lr=True
         )
 
-        # Save and load the best model weights from this training run
+        # Load best model for testing
         best_model_path = seed_dir / f"{MODEL_TYPE}_best.pth"
-        best_state = None
-
-        if trainer.best_checkpoint_path and trainer.best_checkpoint_path.exists():
-            checkpoint = torch.load(trainer.best_checkpoint_path, map_location=device)
-            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                best_state = checkpoint['model_state_dict']
-            elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                best_state = checkpoint['state_dict']
-            else:
-                best_state = checkpoint
-        if best_state is None:
-            best_state = trainer.model.state_dict()
-
-        torch.save(best_state, best_model_path)
+        if not best_model_path.exists():
+            # If best model wasn't saved, use the final checkpoint
+            checkpoint_path = seed_dir / "checkpoint.pt"
+            if checkpoint_path.exists():
+                checkpoint = torch.load(checkpoint_path)
+                torch.save(checkpoint['model_state_dict'], best_model_path)
 
         perf, Y, y_pred = evaluate_test(model, best_model_path, test_loader, trainer.config)
         plot_diagnostics(Y, y_pred, perf, seed_dir, tag=DATASET_TYPE)
@@ -459,7 +421,9 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    data_path = "D:/data/dataset/Mango/mango_splits.mat"
+    # Data path for OSSL
+    root = os.getcwd()
+    data_path ="D:/data/dataset/Ossl/ossl_database.mat"
     dataset = {"data_path": data_path, "dataset_type": DATASET_TYPE}
 
     set_seed(42)

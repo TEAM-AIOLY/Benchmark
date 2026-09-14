@@ -1,4 +1,4 @@
-# ArioulNet_mango.py (updated)
+# ViT_mango.py
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -13,23 +13,23 @@ import optuna
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
 
-from src.net import Arioul_net
+from src.net import ViT_1D
 from src.training.trainer import Trainer
 from src.utils.misc import TrainerConfig
 from src.utils.dataset_loader import DatasetLoader
 from src.utils.testing import RMSEP, ccc
 
 # Constants
-SEARCH_MAX_EPOCHS = 500
-SEARCH_PATIENCE = 30
-FINAL_MAX_EPOCHS = 1000
-FINAL_PATIENCE = 50
+SEARCH_MAX_EPOCHS = 600
+SEARCH_PATIENCE = 60
+FINAL_MAX_EPOCHS = 2000
+FINAL_PATIENCE = 100
 
-N_TRIALS_ARCH = 100
+N_TRIALS_ARCH = 200
 N_TRIALS_HP = 100
 FINAL_SEEDS = list(range(10))
 
-MODEL_TYPE = "ArioulNet_mango"
+MODEL_TYPE = "ViT_1D_mango"
 DATASET_TYPE = "mango_new"
 BATCH_SIZE = 256
 
@@ -41,15 +41,6 @@ def set_seed(seed=42):
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
-def build_conv_config(depth, nf, ks):
-    """Build convolutional layer configuration."""
-    convs = []
-    for i in range(depth):
-        stride = 2 if i > 0 else 1
-        n_filters = nf * (2 ** i)
-        convs.append((n_filters, ks, stride))
-    return convs
 
 def build_loaders(data, batch_size):
     """Build data loaders."""
@@ -78,17 +69,18 @@ def build_loaders(data, batch_size):
     )
     return cal_loader, val_loader, test_loader
 
-def make_model(arch_params, dropout, spec_dims, y_dim, mean, std, device):
+def make_model(arch_params, spec_dims, y_dim, mean, std, device):
     """Create model instance."""
-    conv_config = build_conv_config(arch_params["DEPTH"], arch_params["NF"], arch_params["KS"])
-    model = Arioul_net(
-        input_dims=spec_dims,
-        conv_config=conv_config,
-        fc1_dims=arch_params["FC"],
-        dropout=dropout,
-        out_dims=y_dim,
+    model = ViT_1D(
         mean=mean,
-        std=std
+        std=std,
+        seq_len=spec_dims,
+        patch_size=arch_params["PS"],
+        dim_embed=arch_params["DE"],
+        trans_layers=arch_params["TL"],
+        heads=arch_params["HDS"],
+        mlp_dim=arch_params["MLP"],
+        out_dims=y_dim
     ).to(device)
     return model
 
@@ -142,19 +134,19 @@ def cleanup_checkpoint(checkpoint_dir):
 def objective_architecture(trial, data, mean, std, spec_dims, y_dim, device, search_dir):
     """Optuna objective for architecture search."""
     arch_params = {
-        "DEPTH": trial.suggest_int("DEPTH", 1, 5),
-        "KS": trial.suggest_categorical("KS", [3, 5, 7, 11]),
-        "NF": trial.suggest_int("NF", 1, 7),
-        "FC": trial.suggest_categorical("FC", [32, 64, 128, 256]),
+        "PS": trial.suggest_categorical("PS", [30,40,50, 100, 110]),
+        "DE": trial.suggest_categorical("DE", [32, 64, 128]),
+        "TL": trial.suggest_int("TL", 4, 20),
+        "HDS": trial.suggest_int("HDS", 4, 20),
+        "MLP": trial.suggest_categorical("MLP", [32,64, 128]),
     }
     
     # Fixed hyperparameters for architecture search
     fixed_hp = {"LR": 0.0005, "WD": 0.0015}
-    dropout = 0.1
 
     set_seed(42)
     cal_loader, val_loader, _ = build_loaders(data, BATCH_SIZE)
-    model = make_model(arch_params, dropout, spec_dims, y_dim, mean, std, device)
+    model = make_model(arch_params, spec_dims, y_dim, mean, std, device)
 
     trial_dir = search_dir / f"arch_trial_{trial.number:03d}"
     _, _, _, _, best_val_score = run_training(
@@ -174,14 +166,13 @@ def objective_architecture(trial, data, mean, std, spec_dims, y_dim, device, sea
 def objective_hyperparams(trial, data, mean, std, spec_dims, y_dim, fixed_arch, device, search_dir):
     """Optuna objective for hyperparameter search."""
     hp_params = {
-        "LR": trial.suggest_float("LR", 1e-4, 1e-2, log=True),
+        "LR": trial.suggest_float("LR", 1e-5, 1e-2, log=True),
         "WD": trial.suggest_float("WD", 1e-5, 1e-2, log=True),
-        "DP": trial.suggest_float("DP", 0.0, 0.5),
     }
 
     set_seed(42)
     cal_loader, val_loader, _ = build_loaders(data, BATCH_SIZE)
-    model = make_model(fixed_arch, hp_params["DP"], spec_dims, y_dim, mean, std, device)
+    model = make_model(fixed_arch, spec_dims, y_dim, mean, std, device)
 
     trial_dir = search_dir / f"hp_trial_{trial.number:03d}"
     _, _, _, _, best_val_score = run_training(
@@ -352,11 +343,10 @@ def plot_training_history(train_losses, val_losses, val_metrics, out_dir, tag, m
 def save_retained_architecture_training_plot(data, mean, std, spec_dims, y_dim, best_arch, device, out_dir):
     """Save a training-history plot for the retained architecture after phase 1."""
     fixed_hp = {"LR": 0.0001, "WD": 0.0015}
-    dropout = 0.1
 
     set_seed(42)
     cal_loader, val_loader, _ = build_loaders(data, BATCH_SIZE)
-    model = make_model(best_arch, dropout, spec_dims, y_dim, mean, std, device)
+    model = make_model(best_arch, spec_dims, y_dim, mean, std, device)
 
     trainer, train_losses, val_losses, val_metrics, _ = run_training(
         model,
@@ -389,7 +379,7 @@ def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, d
 
         set_seed(seed)
         cal_loader, val_loader, test_loader = build_loaders(data, BATCH_SIZE)
-        model = make_model(best_arch, best_hp["DP"], spec_dims, y_dim, mean, std, device)
+        model = make_model(best_arch, spec_dims, y_dim, mean, std, device)
 
         trainer, _, _, _, _ = run_training(
             model, best_hp, cal_loader, val_loader,

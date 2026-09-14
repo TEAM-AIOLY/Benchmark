@@ -1,4 +1,3 @@
-# ArioulNet_mango.py (updated)
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -12,12 +11,12 @@ from pathlib import Path
 import optuna
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
+from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 
 from src.net import Arioul_net
 from src.training.trainer import Trainer
 from src.utils.misc import TrainerConfig
 from src.utils.dataset_loader import DatasetLoader
-from src.utils.testing import RMSEP, ccc
 
 # Constants
 SEARCH_MAX_EPOCHS = 500
@@ -29,9 +28,10 @@ N_TRIALS_ARCH = 100
 N_TRIALS_HP = 100
 FINAL_SEEDS = list(range(10))
 
-MODEL_TYPE = "ArioulNet_mango"
-DATASET_TYPE = "mango_new"
-BATCH_SIZE = 256
+MODEL_TYPE = "ArioulNet_wheat"
+DATASET_TYPE = "wheat"
+BATCH_SIZE = 512
+NUM_CLASSES = None  # Will be determined from data
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -58,21 +58,21 @@ def build_loaders(data, batch_size):
     cal_loader = data_utils.DataLoader(
         data_utils.TensorDataset(
             torch.tensor(data["x_cal"], dtype=torch.float32),
-            torch.tensor(data["y_cal"], dtype=torch.float32)
+            torch.tensor(data["y_cal"], dtype=torch.long)  # Long for classification
         ),
         batch_size=batch_size, shuffle=True, drop_last=True
     )
     val_loader = data_utils.DataLoader(
         data_utils.TensorDataset(
             torch.tensor(data["x_val"], dtype=torch.float32),
-            torch.tensor(data["y_val"], dtype=torch.float32)
+            torch.tensor(data["y_val"], dtype=torch.long)
         ),
         batch_size=batch_size, shuffle=False
     )
     test_loader = data_utils.DataLoader(
         data_utils.TensorDataset(
             torch.tensor(data["x_test"], dtype=torch.float32),
-            torch.tensor(data["y_test"], dtype=torch.float32)
+            torch.tensor(data["y_test"], dtype=torch.long)
         ),
         batch_size=batch_size, shuffle=False
     )
@@ -95,8 +95,8 @@ def make_model(arch_params, dropout, spec_dims, y_dim, mean, std, device):
 def run_training(model, hp_params, cal_loader, val_loader, num_epochs, 
                  early_stopping_patience, trial=None, verbose=False, 
                  save_path=None, use_cosine_lr=True):
-    """Run training with checkpointing."""
-    criterion = nn.MSELoss(reduction="mean")
+    """Run training with checkpointing for classification."""
+    criterion = nn.CrossEntropyLoss()  # Classification loss
     optimizer = optim.Adam(model.parameters(), lr=hp_params["LR"], weight_decay=hp_params["WD"])
 
     config = TrainerConfig(model_name=MODEL_TYPE)
@@ -104,7 +104,7 @@ def run_training(model, hp_params, cal_loader, val_loader, num_epochs,
         batch_size=hp_params.get("batch_size", BATCH_SIZE),
         learning_rate=hp_params["LR"],
         num_epochs=num_epochs,
-        classification=False,
+        classification=True,  # Enable classification mode
         save_path=save_path,
         use_cosine_lr=use_cosine_lr
     )
@@ -122,7 +122,14 @@ def run_training(model, hp_params, cal_loader, val_loader, num_epochs,
     )
     
     train_losses, val_losses, val_metrics = trainer.train()
-    best_val_score = max(float(np.mean(np.atleast_1d(m))) for m in val_metrics)
+    # For classification, val_metrics typically contains accuracy or F1 score
+    metric_values = []
+    for m in val_metrics:
+        if torch.is_tensor(m):
+            metric_values.append(float(m.detach().cpu().mean().item()))
+        else:
+            metric_values.append(float(np.mean(np.atleast_1d(np.asarray(m)))))
+    best_val_score = max(metric_values) if metric_values else float("-inf")
     
     return trainer, train_losses, val_losses, val_metrics, best_val_score
 
@@ -142,9 +149,9 @@ def cleanup_checkpoint(checkpoint_dir):
 def objective_architecture(trial, data, mean, std, spec_dims, y_dim, device, search_dir):
     """Optuna objective for architecture search."""
     arch_params = {
-        "DEPTH": trial.suggest_int("DEPTH", 1, 5),
+        "DEPTH": trial.suggest_int("DEPTH", 1, 4),
         "KS": trial.suggest_categorical("KS", [3, 5, 7, 11]),
-        "NF": trial.suggest_int("NF", 1, 7),
+        "NF": trial.suggest_int("NF", 1, 3),
         "FC": trial.suggest_categorical("FC", [32, 64, 128, 256]),
     }
     
@@ -198,113 +205,83 @@ def objective_hyperparams(trial, data, mean, std, spec_dims, y_dim, fixed_arch, 
     return best_val_score
 
 # Stage 3: Final Multi-seed Evaluation
-def evaluate_test(model, model_path, test_loader, config):
-    """Evaluate model on test set."""
+def evaluate_test_classification(model, model_path, test_loader, config):
+    """Evaluate model on test set for classification."""
     from src.utils import test_benchmark
     
     Y, y_pred = test_benchmark(model, model_path, test_loader, config)
     
+    # Convert predictions to class labels (assuming logits)
+    y_pred_labels = np.argmax(y_pred, axis=1) if y_pred.ndim > 1 else y_pred
+    Y_np = np.array(Y).flatten()
+    
     # Compute metrics
-    y_pred_np = np.array(y_pred)
-    Y_np = np.array(Y)
-    
     perf = {
-        "ccc": ccc(Y_np, y_pred_np),
-        "r2": 1 - np.sum((Y_np - y_pred_np) ** 2) / (np.sum((Y_np - np.mean(Y_np)) ** 2) + 1e-12),
-        "rmsep": RMSEP(Y_np, y_pred_np)
+        "accuracy": accuracy_score(Y_np, y_pred_labels),
+        "f1_macro": f1_score(Y_np, y_pred_labels, average='macro'),
+        "f1_weighted": f1_score(Y_np, y_pred_labels, average='weighted'),
+        "confusion_matrix": confusion_matrix(Y_np, y_pred_labels).tolist()
     }
-    perf = {k: float(np.ravel(v)[0]) for k, v in perf.items()}
-    return perf, Y_np, y_pred_np
-
-def plot_diagnostics(Y, y_pred, perf, out_dir, tag):
-    """Create diagnostic plots."""
-    import matplotlib.pyplot as plt
     
-    lims = [min(np.min(Y), np.min(y_pred)), max(np.max(Y), np.max(y_pred))]
-    typ = tag
+    return perf, Y_np, y_pred_labels
 
+def plot_diagnostics_classification(Y, y_pred, perf, out_dir, tag):
+    """Create diagnostic plots for classification."""
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import ConfusionMatrixDisplay
+    
+    # Confusion Matrix
     fig, ax = plt.subplots(figsize=(8, 6))
-    hexbin = ax.hexbin(Y, y_pred, gridsize=50, cmap='viridis', mincnt=1)
-    cb = fig.colorbar(hexbin, ax=ax, orientation='vertical')
-    cb.set_label('Density')
-    ax.plot(lims, lims, 'k-', label=typ)
-    ax.set_xlim(lims)
-    ax.set_ylim(lims)
-    ax.set_xlabel('Expected Values')
-    ax.set_ylabel('Predicted Values')
-    ax.set_title('')
-    ax.text(
-        0.98, 0.02,
-        f"CCC: {perf['ccc']:.2f}\nR²: {perf['r2']:.2f}\nRMSEP: {perf['rmsep']:.3f}",
-        transform=ax.transAxes,
-        fontsize=12,
-        va='bottom', ha='right',
-        bbox=dict(facecolor='white', edgecolor='black', boxstyle='round,pad=0.5'),
-        color='red',
-        fontweight='bold',
-        fontfamily='serif'
-    )
-    plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.15),
-               fancybox=True, shadow=True, ncol=5, fontsize=12)
+    cm = np.array(perf["confusion_matrix"])
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+    disp.plot(ax=ax, cmap='viridis', values_format='d')
+    ax.set_title(f'Confusion Matrix - {tag}')
     plt.tight_layout()
-    plt.grid()
-    hexbin_pdf_path = out_dir / "fig_hexbin.pdf"
-    plt.savefig(hexbin_pdf_path, format='pdf')
+    cm_pdf_path = out_dir / f"confusion_matrix_{tag}.pdf"
+    plt.savefig(cm_pdf_path, format='pdf')
     plt.close('all')
 
-
-def plot_seed_prediction_variability(predictions, true_values, out_dir, tag):
+def plot_seed_prediction_variability_classification(predictions, true_values, out_dir, tag):
     """Summarize prediction variability across seeds, plotted against true values."""
     import matplotlib.pyplot as plt
- 
+    
+    # Calculate prediction stability
     preds = np.stack(predictions, axis=0)
     true_vals = np.asarray(true_values)
-    mean_pred = np.mean(preds, axis=0)
-    std_pred = np.std(preds, axis=0)
- 
-    if mean_pred.ndim == 1:
-        order = np.argsort(true_vals)
-        true_sorted = true_vals[order]
-        mean_sorted = mean_pred[order]
-        std_sorted = std_pred[order]
- 
-        fig, ax = plt.subplots(figsize=(10, 5))
-        ax.plot(true_sorted, mean_sorted, color='#1f77b4', linewidth=2, label='Mean prediction')
-        ax.fill_between(true_sorted, mean_sorted - std_sorted, mean_sorted + std_sorted,
-                        color='#1f77b4', alpha=0.2, label='±1 SD')
-        lims = [min(true_sorted.min(), mean_sorted.min()), max(true_sorted.max(), mean_sorted.max())]
-        ax.plot(lims, lims, color='#d62728', linewidth=1.5, linestyle='--', label='Identity (y = x)')
-        ax.set_xlabel('True value')
-        ax.set_ylabel('Prediction')
-        ax.set_title(f'Prediction variability across {len(predictions)} seeds ({tag})')
-        ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
-        ax.legend(loc='best')
-    else:
-        n_outputs = mean_pred.shape[1]
-        fig, axes = plt.subplots(n_outputs, 1, figsize=(10, 2.5 * n_outputs), squeeze=False)
-        for i, ax in enumerate(axes[:, 0]):
-            order = np.argsort(true_vals[:, i])
-            true_sorted = true_vals[order, i]
-            mean_sorted = mean_pred[order, i]
-            std_sorted = std_pred[order, i]
- 
-            ax.plot(true_sorted, mean_sorted, color='#1f77b4', linewidth=2, label='Mean prediction')
-            ax.fill_between(true_sorted, mean_sorted - std_sorted, mean_sorted + std_sorted,
-                            color='#1f77b4', alpha=0.2, label='±1 SD')
-            lims = [min(true_sorted.min(), mean_sorted.min()), max(true_sorted.max(), mean_sorted.max())]
-            ax.plot(lims, lims, color='#d62728', linewidth=1.5, linestyle='--', label='Identity (y = x)')
-            ax.set_xlabel('True value')
-            ax.set_ylabel(f'Output {i + 1}')
-            ax.set_title(f'Prediction variability across {len(predictions)} seeds ({tag}) - output {i + 1}')
-            ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
-            ax.legend(loc='best')
- 
+    
+    # Calculate majority vote and agreement
+    majority_vote = np.apply_along_axis(lambda x: np.bincount(x).argmax(), axis=0, arr=preds)
+    agreement = np.mean(preds == majority_vote, axis=0)
+    
+    order = np.argsort(true_vals)
+    true_sorted = true_vals[order]
+    majority_vote_sorted = majority_vote[order]
+    agreement_sorted = agreement[order]
+    
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+    
+    # Plot predictions against true values
+    ax1.plot(true_sorted, majority_vote_sorted, color='#1f77b4', linewidth=2, label='Majority vote')
+    lims = [min(true_sorted.min(), majority_vote_sorted.min()), max(true_sorted.max(), majority_vote_sorted.max())]
+    ax1.plot(lims, lims, color='#d62728', linewidth=1.5, linestyle='--', label='Identity (y = x)')
+    ax1.set_xlabel('True class')
+    ax1.set_ylabel('Predicted class')
+    ax1.set_title(f'Majority vote predictions across {len(predictions)} seeds ({tag})')
+    ax1.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
+    ax1.legend(loc='best')
+    
+    # Plot agreement against true values
+    ax2.bar(true_sorted, agreement_sorted, color='#2ca02c', alpha=0.7)
+    ax2.set_xlabel('True class')
+    ax2.set_ylabel('Agreement among seeds')
+    ax2.set_title('Prediction agreement across seeds')
+    ax2.set_ylim(0, 1)
+    ax2.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
+    
     fig.tight_layout()
     pdf_path = out_dir / f"prediction_variability_{tag}.pdf"
     fig.savefig(pdf_path, format='pdf')
     plt.close(fig)
-
-
 
 def plot_training_history(train_losses, val_losses, val_metrics, out_dir, tag, maxplot_loss=10):
     """Plot training and validation loss with metric curves."""
@@ -334,9 +311,9 @@ def plot_training_history(train_losses, val_losses, val_metrics, out_dir, tag, m
     if len(val_metrics) > 0 and isinstance(val_metrics[0], (list, tuple, np.ndarray)):
         for i in range(len(val_metrics[0])):
             metric_scores = [scores[i] for scores in val_metrics]
-            ax2.plot(metric_scores, label=f'R² Score y{i}', linestyle='--', color=metric_color, linewidth=2)
+            ax2.plot(metric_scores, label=f'Metric y{i}', linestyle='--', color=metric_color, linewidth=2)
     else:
-        ax2.plot(val_metrics, label='R² Score', linestyle='--', color=metric_color, linewidth=2)
+        ax2.plot(val_metrics, label='Validation Metric', linestyle='--', color=metric_color, linewidth=2)
 
     ax2.set_ylim(0, 1)
     ax2.legend(loc='upper right')
@@ -347,7 +324,6 @@ def plot_training_history(train_losses, val_losses, val_metrics, out_dir, tag, m
     pdf_path = out_dir / f"Training_{tag}.pdf"
     plt.savefig(pdf_path, format='pdf')
     plt.close(fig)
-
 
 def save_retained_architecture_training_plot(data, mean, std, spec_dims, y_dim, best_arch, device, out_dir):
     """Save a training-history plot for the retained architecture after phase 1."""
@@ -373,18 +349,14 @@ def save_retained_architecture_training_plot(data, mean, std, spec_dims, y_dim, 
     plot_training_history(train_losses, val_losses, val_metrics, out_dir, tag='retained_architecture')
     return trainer
 
-
-def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, device, final_dir):
-    """Run multi-seed final evaluation."""
+def run_final_multiseed_classification(data, mean, std, spec_dims, y_dim, best_arch, best_hp, device, final_dir):
+    """Run multi-seed final evaluation for classification."""
     seed_metrics = []
     seed_predictions = []
     seed_true_values = None
     
     for seed in FINAL_SEEDS:
         seed_dir = final_dir / f"seed_{seed:02d}"
-        if seed_dir.exists():
-            import shutil
-            shutil.rmtree(seed_dir)
         seed_dir.mkdir(parents=True, exist_ok=True)
 
         set_seed(seed)
@@ -401,25 +373,17 @@ def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, d
             use_cosine_lr=True
         )
 
-        # Save and load the best model weights from this training run
+        # Load best model for testing
         best_model_path = seed_dir / f"{MODEL_TYPE}_best.pth"
-        best_state = None
+        if not best_model_path.exists():
+            checkpoint_path = seed_dir / "checkpoint.pt"
+            if checkpoint_path.exists():
+                checkpoint = torch.load(checkpoint_path)
+                torch.save(checkpoint['model_state_dict'], best_model_path)
 
-        if trainer.best_checkpoint_path and trainer.best_checkpoint_path.exists():
-            checkpoint = torch.load(trainer.best_checkpoint_path, map_location=device)
-            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                best_state = checkpoint['model_state_dict']
-            elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                best_state = checkpoint['state_dict']
-            else:
-                best_state = checkpoint
-        if best_state is None:
-            best_state = trainer.model.state_dict()
-
-        torch.save(best_state, best_model_path)
-
-        perf, Y, y_pred = evaluate_test(model, best_model_path, test_loader, trainer.config)
-        plot_diagnostics(Y, y_pred, perf, seed_dir, tag=DATASET_TYPE)
+        perf, Y, y_pred = evaluate_test_classification(model, best_model_path, test_loader, trainer.config)
+        plot_diagnostics_classification(Y, y_pred, perf, seed_dir, tag=DATASET_TYPE)
+        
         if seed_true_values is None:
             seed_true_values = Y
         seed_predictions.append(y_pred)
@@ -429,9 +393,9 @@ def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, d
         
         metrics_dict = {
             "seed": seed,
-            "ccc": perf["ccc"],
-            "r2": perf["r2"],
-            "rmsep": perf["rmsep"],
+            "accuracy": perf["accuracy"],
+            "f1_macro": perf["f1_macro"],
+            "f1_weighted": perf["f1_weighted"],
             "best_epoch": trainer.best_epoch,
             "n_parameters": nb_params,
         }
@@ -442,24 +406,28 @@ def run_final_multiseed(data, mean, std, spec_dims, y_dim, best_arch, best_hp, d
         seed_metrics.append(metrics_dict)
     
     if seed_true_values is not None and len(seed_predictions) > 0:
-        plot_seed_prediction_variability(seed_predictions, seed_true_values, final_dir, tag=DATASET_TYPE)
+        plot_seed_prediction_variability_classification(
+            seed_predictions, seed_true_values, final_dir, tag=DATASET_TYPE
+        )
     
     return seed_metrics
 
-def summarise_seed_metrics(seed_metrics):
+def summarise_seed_metrics_classification(seed_metrics):
     """Summarize metrics across seeds."""
     summary = {}
-    for key in ["ccc", "r2", "rmsep"]:
+    for key in ["accuracy", "f1_macro", "f1_weighted"]:
         values = np.array([m[key] for m in seed_metrics])
         summary[key] = {"mean": float(np.mean(values)), "std": float(np.std(values))}
     return summary
 
 def main():
-    """Main benchmarking pipeline."""
+    """Main benchmarking pipeline for classification."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     
-    data_path = "D:/data/dataset/Mango/mango_splits.mat"
+    # Data path for Wheat
+    root = os.getcwd()
+    data_path = "D:/data/dataset/Wheat_dt/"
     dataset = {"data_path": data_path, "dataset_type": DATASET_TYPE}
 
     set_seed(42)
@@ -469,11 +437,17 @@ def main():
     spec_dims = data["x_cal"].shape[1]
     y_dim = data["y_cal"].shape[1]
     
-    print(f"Spectra dimensions: {spec_dims}, Output dimensions: {y_dim}")
+    # Determine number of classes
+    global NUM_CLASSES
+    NUM_CLASSES = y_dim
+    
+    print(f"Spectra dimensions: {spec_dims}")
+    print(f"Number of classes: {NUM_CLASSES}")
+    print(f"Output dimensions: {y_dim}")
 
     # Setup directories
-    root = Path(__file__).parent.parent
-    benchmark_root = root / "Benchmark" / DATASET_TYPE / MODEL_TYPE
+    root_path = Path(__file__).parent.parent
+    benchmark_root = root_path / "Benchmark" / DATASET_TYPE / MODEL_TYPE
     arch_search_dir = benchmark_root / "stage1_architecture_search"
     hp_search_dir = benchmark_root / "stage2_hyperparameter_search"
     final_dir = benchmark_root / "stage3_final"
@@ -552,11 +526,11 @@ def main():
     print("Stage 3: Multi-seed Final Evaluation")
     print("="*60)
     
-    seed_metrics = run_final_multiseed(
+    seed_metrics = run_final_multiseed_classification(
         data, mean, std, spec_dims, y_dim, best_arch, best_hp, device, final_dir
     )
     
-    summary = summarise_seed_metrics(seed_metrics)
+    summary = summarise_seed_metrics_classification(seed_metrics)
     
     # Save final results
     with open(final_dir / "seed_metrics.json", "w") as f:
