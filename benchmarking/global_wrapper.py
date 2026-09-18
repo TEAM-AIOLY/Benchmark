@@ -36,9 +36,9 @@ class BenchmarkSpec:
     final_patience: int = 50
     n_trials_arch: int = 30
     n_trials_hp: int = 30
-    final_seeds: tuple[int, ...] = tuple(range(10))
+    final_seeds: tuple[int, ...] = tuple(range(20))
     classification: bool = False
-    fixed_architecture_lr: float = 5e-4
+    fixed_architecture_lr: float = 1e-5
     fixed_architecture_wd: float = 1.5e-3
     architecture_plot: Callable[..., None] | None = None
     evaluation_plot: Callable[..., None] | None = None
@@ -72,6 +72,7 @@ def build_loaders(data: dict[str, Any], batch_size: int, classification: bool):
             batch_size=batch_size,
             shuffle=shuffle,
             drop_last=drop_last,
+            pin_memory=torch.cuda.is_available(),
         )
 
     return loader("cal", True, True), loader("val", False), loader("test", False)
@@ -102,6 +103,7 @@ def run_training(spec: BenchmarkSpec, model: nn.Module, hp: dict[str, Any],
         classification=spec.classification,
         save_path=save_path,
         use_cosine_lr=True,
+        device=device,
     )
     trainer = Trainer(
         model=model,
@@ -132,6 +134,7 @@ def _cleanup(path: Path) -> None:
 def _objective_architecture(spec, context, device, search_dir):
     def objective(trial):
         arch = spec.architecture_space(trial)
+        print(f"Starting architecture trial {trial.number + 1}", flush=True)
         set_seed(42)
         cal, val, _ = build_loaders(context["data"], spec.batch_size, spec.classification)
         model = spec.build_model(arch, 0.1, **context["model_args"], device=device)
@@ -142,6 +145,7 @@ def _objective_architecture(spec, context, device, search_dir):
             trial_dir / spec.model_type,
         )
         _cleanup(trial_dir)
+        print(f"Finished architecture trial {trial.number + 1}", flush=True)
         return result[-1]
     return objective
 
@@ -149,6 +153,7 @@ def _objective_architecture(spec, context, device, search_dir):
 def _objective_hyperparameters(spec, context, best_arch, device, search_dir):
     def objective(trial):
         hp = spec.hyperparameter_space(trial)
+        print(f"Starting hyperparameter trial {trial.number + 1}", flush=True)
         set_seed(42)
         cal, val, _ = build_loaders(context["data"], spec.batch_size, spec.classification)
         model = spec.build_model(best_arch, hp.get("DP", 0.1), **context["model_args"], device=device)
@@ -158,6 +163,7 @@ def _objective_hyperparameters(spec, context, best_arch, device, search_dir):
             device, trial, trial_dir / spec.model_type,
         )
         _cleanup(trial_dir)
+        print(f"Finished hyperparameter trial {trial.number + 1}", flush=True)
         return result[-1]
     return objective
 

@@ -43,16 +43,16 @@ def _vit(arch, dropout, spec_dims, y_dim, mean, std, device):
 
 
 def _cnn_architecture(trial: optuna.Trial):
-    return {"KS": trial.suggest_categorical("KS", [3, 5, 7, 11]), "NF": trial.suggest_int("NF", 1, 8), "FC": trial.suggest_categorical("FC", [32, 64, 128, 256])}
+    return {"KS": trial.suggest_categorical("KS", [3, 5, 7, 11]), "NF": trial.suggest_int("NF", 1, 12), "FC": trial.suggest_categorical("FC", [32, 64, 128, 256])}
 
 
 def _arioul_architecture(dataset):
     def space(trial: optuna.Trial):
         if dataset == "ossl":
-            return {"DEPTH": trial.suggest_int("DEPTH", 1, 3), "KS": trial.suggest_categorical("KS", [7, 11]), "NF": trial.suggest_int("NF", 1, 5), "FC": trial.suggest_categorical("FC", [128, 256])}
+            return {"DEPTH": trial.suggest_int("DEPTH", 1, 7), "KS": trial.suggest_categorical("KS", [7, 11,21]), "NF": trial.suggest_int("NF", 1, 5), "FC": trial.suggest_categorical("FC", [128, 256])}
         if dataset == "wheat":
-            return {"DEPTH": trial.suggest_int("DEPTH", 1, 4), "KS": trial.suggest_categorical("KS", [3, 5, 7, 11]), "NF": trial.suggest_int("NF", 1, 3), "FC": trial.suggest_categorical("FC", [32, 64, 128, 256])}
-        return {"DEPTH": trial.suggest_int("DEPTH", 1, 5), "KS": trial.suggest_categorical("KS", [3, 5, 7, 11]), "NF": trial.suggest_int("NF", 1, 7), "FC": trial.suggest_categorical("FC", [32, 64, 128, 256])}
+            return {"DEPTH": trial.suggest_int("DEPTH", 1, 5), "KS": trial.suggest_categorical("KS", [3, 5, 7, 11,17]), "NF": trial.suggest_int("NF", 1, 9), "FC": trial.suggest_categorical("FC", [32, 64, 128, 256])}
+        return {"DEPTH": trial.suggest_int("DEPTH", 1, 7), "KS": trial.suggest_categorical("KS", [3, 5, 7, 11,17]), "NF": trial.suggest_int("NF", 1, 12), "FC": trial.suggest_categorical("FC", [32, 64, 128, 256])}
     return space
 
 
@@ -61,7 +61,7 @@ def _resnet_architecture(trial: optuna.Trial):
 
 
 def _vit_architecture(trial: optuna.Trial):
-    return {"PS": trial.suggest_categorical("PS", [30, 40, 50, 100, 110]), "DE": trial.suggest_categorical("DE", [32, 64, 128]), "TL": trial.suggest_int("TL", 4, 20), "HDS": trial.suggest_int("HDS", 4, 20), "MLP": trial.suggest_categorical("MLP", [32, 64, 128])}
+    return {"PS": trial.suggest_categorical("PS", [20,30, 40, 50, 70, 100, 110]), "DE": trial.suggest_categorical("DE", [32, 64, 128,256]), "TL": trial.suggest_int("TL", 4, 20), "HDS": trial.suggest_int("HDS", 4, 20), "MLP": trial.suggest_categorical("MLP", [32, 64, 128,256])}
 
 
 def _hp(trial: optuna.Trial):
@@ -98,7 +98,7 @@ def get_spec(model: str, dataset: str) -> BenchmarkSpec:
         build_model=factory,
         architecture_space=architecture,
         hyperparameter_space=_vit_hp if model_key in {"vit", "vit_1d"} else _hp,
-        batch_size=256 if model_key in {"arioulnet", "vit", "vit_1d"} else 512,
+        batch_size=256 if model_key in {"vit", "vit_1d"} else 512,
         search_max_epochs=600 if model_key in {"vit", "vit_1d"} else (500 if classification else 200),
         search_patience=60 if model_key in {"vit", "vit_1d"} else 30,
         final_max_epochs=2000 if model_key in {"vit", "vit_1d"} else (1000 if classification else 300),

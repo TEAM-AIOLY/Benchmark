@@ -72,7 +72,8 @@ class TrainerConfig:
                f"max_loss_plot={self.max_loss_plot}, save_path={self.save_path})"
 
     def update_config(self, batch_size=None, learning_rate=None, num_epochs=None, save_model=None,
-                       classification=None, max_loss_plot=None, save_path=None, use_cosine_lr=None):
+                       classification=None, max_loss_plot=None, save_path=None, use_cosine_lr=None,
+                       device=None):
         """
         Method to update configuration parameters dynamically.
 
@@ -100,6 +101,8 @@ class TrainerConfig:
             self.save_path = save_path
         if use_cosine_lr is not None:
             self.use_cosine_lr = use_cosine_lr
+        if device is not None:
+            self.device = str(device)
 
 
 class Utils:

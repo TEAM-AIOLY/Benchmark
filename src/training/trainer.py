@@ -140,7 +140,11 @@ class Trainer:
         
         for inputs, targets in self.train_loader:
             inputs = inputs.to(self.device, non_blocking=True).float()
-            targets = targets.to(self.device, non_blocking=True).float()
+            targets = targets.to(self.device, non_blocking=True)
+            if not self.config.classification:
+                targets = targets.float()
+            else:
+                targets = targets.long()
 
             self.optimizer.zero_grad()
             outputs = self.model(inputs[:, None])
@@ -165,7 +169,11 @@ class Trainer:
         with torch.no_grad():
             for inputs, targets in self.val_loader:
                 inputs = inputs.to(self.device, non_blocking=True).float()
-                targets = targets.to(self.device, non_blocking=True).float()
+                targets = targets.to(self.device, non_blocking=True)
+                if not self.config.classification:
+                    targets = targets.float()
+                else:
+                    targets = targets.long()
                 outputs = self.model(inputs[:, None])
 
                 loss = self.criterion(outputs, targets)
@@ -196,7 +204,12 @@ class Trainer:
                 metrics.append(R2[i].compute().item())
         else:
             F1 = torcheval.metrics.MulticlassF1Score()
-            F1.update(torch.argmax(targets, dim=1), torch.argmax(outputs, dim=1))
+            target_labels = (
+                torch.argmax(targets, dim=1)
+                if targets.ndim > 1
+                else targets.long()
+            )
+            F1.update(target_labels, torch.argmax(outputs, dim=1))
             metrics = F1.compute()
         return metrics
 
